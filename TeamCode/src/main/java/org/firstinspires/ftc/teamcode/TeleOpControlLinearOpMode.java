@@ -81,7 +81,7 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
     private DcMotor intake = null;
     private DcMotor catapult1 = null;
     private DcMotor catapult2 = null;
-    private DcMotor foot = null;
+//    private DcMotor foot = null;
 
     // motor power 1 = 100% and 0.5 = 50%
     // negative values = reverse ex: -0.5 = reverse 50%
@@ -90,10 +90,10 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
     private double INTAKE_OFF_POWER = 0.0;
     private double intakePower = INTAKE_OFF_POWER;
 
-    private double FOOT_UP_POWER = 1.0;
-    private double FOOT_DOWN_POWER = -0.85;
-    private double FOOT_OFF_POWER = 0.0;
-    private double footPower = FOOT_OFF_POWER;
+//    private double FOOT_UP_POWER = 1.0;
+//    private double FOOT_DOWN_POWER = -0.85;
+//    private double FOOT_OFF_POWER = 0.0;
+//    private double footPower = FOOT_OFF_POWER;
 
     private double CATAPULT_UP_POWER = -1.0;
     private double CATAPULT_DOWN_POWER = 1.0;
@@ -102,8 +102,8 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
     private enum CatapultModes {UP, DOWN, HOLD}
     private CatapultModes pivotMode;
 
-    private enum FootMode {UP, DOWN, BRAKE}
-    private FootMode footmode;
+//    private enum FootMode {UP, DOWN, BRAKE}
+//    private FootMode footmode;
 
     /*
      * Code to run ONCE when the driver hits INIT (same as previous year's init())
@@ -124,7 +124,7 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
         intake = hardwareMap.get(DcMotor.class, "intake");
         catapult1 = hardwareMap.get(DcMotor.class, "catapult1");
         catapult2 = hardwareMap.get(DcMotor.class, "catapult2");
-        foot = hardwareMap.get(DcMotor.class, "foot");
+//        foot = hardwareMap.get(DcMotor.class, "foot");
 
         // ########################################################################################
         // !!!            IMPORTANT Drive Information. Test your motor directions.            !!!!!
@@ -148,13 +148,13 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
         intake.setDirection(DcMotor.Direction.FORWARD); // Forward should INTAKE.
         catapult1.setDirection(DcMotor.Direction.REVERSE); // Backwards should pivot DOWN, or in the stowed position.
         catapult2.setDirection(DcMotor.Direction.FORWARD);
-        foot.setDirection(DcMotor.Direction.REVERSE); // Backwards should should stay UP, or in the stowed position
+//        foot.setDirection(DcMotor.Direction.REVERSE); // Backwards should should stay UP, or in the stowed position
 
         // set initial subsystem behavior
         intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         catapult1.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         catapult2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        foot.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+//        foot.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
         // Wait for the game to start (driver presses START)
         telemetry.addData("Status", "Initialized");
@@ -186,11 +186,11 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
                 intakeInButton = false;
             }
 
-            boolean footOutButton = gamepad1.a;
-            boolean footUpButton = gamepad1.b;
-            if (footOutButton && footUpButton) {
-                footOutButton = false;
-            }
+//            boolean footOutButton = gamepad1.a;
+//            boolean footUpButton = gamepad1.b;
+//            if (footOutButton && footUpButton) {
+//                footOutButton = false;
+//            }
 
             boolean catapultUpButton = gamepad1.right_bumper;
             boolean catapultDownButton = gamepad1.right_trigger > 0.2;
@@ -243,16 +243,16 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             }
 
             // FOOT CODE
-            if (footOutButton) {
-                footmode = FootMode.DOWN;
-                footPower = FOOT_DOWN_POWER;
-            } else if (footUpButton) {
-                footmode = FootMode.UP;
-                footPower = FOOT_UP_POWER;
-            } else {
-                footmode = FootMode.BRAKE;
-                footPower = FOOT_OFF_POWER;
-            }
+//            if (footOutButton) {
+//                footmode = FootMode.DOWN;
+//                footPower = FOOT_DOWN_POWER;
+//            } else if (footUpButton) {
+//                footmode = FootMode.UP;
+//                footPower = FOOT_UP_POWER;
+//            } else {
+//                footmode = FootMode.BRAKE;
+//                footPower = FOOT_OFF_POWER;
+//            }
 
             // Determine pivot mode
             if (catapultUpButton) {
@@ -277,7 +277,7 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             rightBackDrive.setPower(rightBackPower);
 
             intake.setPower(intakePower);
-            foot.setPower(footPower);
+//            foot.setPower(footPower);
 
             String catapult_mode_str;
             if (pivotMode == CatapultModes.UP) {
@@ -294,8 +294,8 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             telemetry.addData("Front left/Right", "%4.2f, %4.2f", leftFrontPower, rightFrontPower);
             telemetry.addData("Back  left/Right", "%4.2f, %4.2f", leftBackPower, rightBackPower);
             telemetry.addData("Intake", "%%4.2f", intake.getPower());
-            telemetry.addData("Foot Power", "%4.2f", foot.getPower());
-            telemetry.addData("Foot MODE", "%s", footmode);
+//            telemetry.addData("Foot Power", "%4.2f", foot.getPower());
+//            telemetry.addData("Foot MODE", "%s", footmode);
             telemetry.addData("Catapult1 Current/Target/power", "%d, %d, %4.2f",
                     catapult1.getCurrentPosition(), catapult1.getTargetPosition(), catapult1.getPower());
             telemetry.addData("Catapult2 Current/Target/power", "%d, %d, %4.2f",
