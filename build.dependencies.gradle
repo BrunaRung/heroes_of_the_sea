@@ -1,6 +1,8 @@
 repositories {
     mavenCentral()
     google() // Needed for androidx
+    maven { url = "https://mymaven.bylazar.com/releases" } // Pedro Pathing
+    maven { url = "https://maven.brott.dev/" } // FTC Dashboard
 }
 
 dependencies {
@@ -13,5 +15,16 @@ dependencies {
     implementation 'org.firstinspires.ftc:FtcCommon:11.1.0'
     implementation 'org.firstinspires.ftc:Vision:11.1.0'
     implementation 'androidx.appcompat:appcompat:1.2.0'
+
+    // Pedro Pathing (path following + localization) - used by the odometry Localizer,
+    // and later for autonomous. See doc/coordinates-system.md for the coordinate frame.
+    implementation 'com.pedropathing:ftc:2.1.2'
+    // NOTE: Pedro's Panels telemetry (com.pedropathing:telemetry) and bylazar Panels
+    // (com.bylazar:fullpanels) are intentionally NOT included: Panels runs a second web
+    // server on port 8080 that collides with FTC Dashboard (BindException -> RC crash-loop).
+    // We use FTC Dashboard for visualization instead.
+
+    // FTC Dashboard - live field overlay (robot drawn in TeleOpControlLinearOpMode).
+    implementation 'com.acmerobotics.dashboard:dashboard:0.6.0'
 }
 

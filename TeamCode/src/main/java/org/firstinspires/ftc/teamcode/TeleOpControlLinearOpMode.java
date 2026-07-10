@@ -29,14 +29,22 @@
 
 package org.firstinspires.ftc.teamcode;
 
+import com.acmerobotics.dashboard.FtcDashboard;
+import com.acmerobotics.dashboard.canvas.Canvas;
+import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
+
+import com.pedropathing.ftc.FTCCoordinates;
+import com.pedropathing.ftc.localization.constants.DriveEncoderConstants;
+import com.pedropathing.geometry.Pose;
+
+import com.qualcomm.hardware.lynx.LynxModule;
+import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
-import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
+import java.util.List;
 
 /*
  * This file contains an example of a Linear "OpMode".
@@ -72,8 +80,38 @@ import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
 public class TeleOpControlLinearOpMode extends LinearOpMode {
 
 
-    private Pose2D startPose = new Pose2D(DistanceUnit.MM, 0,0, AngleUnit.RADIANS, 0 );
-    double x = startPose.getX(DistanceUnit.INCH);
+    // ################################### ODOMETRY / LOCALIZATION ###############################
+    // Localization is delegated to a Pedro Pathing Localizer (see doc/coordinates-system.md).
+    // Poses are in the Pedro coordinate system. The current implementation fuses the drive-motor
+    // encoders (x/y) with the Control Hub IMU (heading); swap it for a Pinpoint/dead-wheel
+    // Localizer later without touching the rest of this OpMode.
+
+    // --- Drive encoder tick->inch calibration (REV UltraPlanetary 12:1 + HD Hex, 75mm wheels) ---
+    // COUNTS_PER_INCH = 28 (HD Hex CPR) * 10.484 (true 12:1) / (pi * 2.953") ~= 31.6 counts/inch.
+    // forward/strafe multipliers are inches-per-tick; TUNE via Pedro's tuners (push 48").
+    static final double COUNTS_PER_INCH = 28.0 * 10.484 / (2.953 * Math.PI);
+    static final double FORWARD_TICKS_TO_INCHES = 1.0 / COUNTS_PER_INCH;
+    static final double STRAFE_TICKS_TO_INCHES = 1.0 / COUNTS_PER_INCH; // tune separately for strafe
+
+    // Control Hub mounting orientation - SET THESE to how your hub is actually mounted.
+    static final RevHubOrientationOnRobot HUB_ORIENTATION = new RevHubOrientationOnRobot(
+            RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD,
+            RevHubOrientationOnRobot.UsbFacingDirection.UP);
+
+    // Starting pose in Pedro coordinates (default corner origin). Change per your auto start.
+    private final Pose startPoseBlueNear = new Pose(20.4, 122.74, Math.toRadians(144));
+    private final Pose startPoseRedNear = new Pose(123.7, 122.74, Math.toRadians(36));
+    private final Pose startPose = new Pose(72, 72, Math.PI);
+
+    // The Localizer (typed as PP's interface so it can be swapped for a Pinpoint/dead-wheel
+    // localizer later) and the hubs cached for bulk encoder reads.
+    private com.pedropathing.localization.Localizer localizer;
+    private List<LynxModule> allHubs;
+
+    // FTC Dashboard field overlay - draws the robot each loop. Robot is drawn as an 18" square.
+    static final double ROBOT_SIZE_INCHES = 18.0;
+    private FtcDashboard dashboard;
+
     // Declare OpMode members for each of the 4 motors.
     private ElapsedTime runtime = new ElapsedTime();
     private ElapsedTime catatime = new ElapsedTime();
@@ -169,6 +207,28 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
         catapult2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         //foot.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
+        // ODOMETRY / LOCALIZATION SETUP
+        // Bulk-read all hub data once per loop so reading 4 drive encoders costs one transfer.
+        allHubs = hardwareMap.getAll(LynxModule.class);
+        for (LynxModule hub : allHubs) {
+            hub.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
+        }
+        // Configure the drive-encoder localizer (motor names must match the robot config, and the
+        // encoder directions/multipliers are tuned with Pedro's tuners). The class fuses these
+        // encoders (x/y) with the Control Hub IMU (heading) and reports poses in Pedro coordinates.
+        DriveEncoderConstants localizerConstants = new DriveEncoderConstants()
+                .leftFrontMotorName("left_front_drive")
+                .leftRearMotorName("left_back_drive")
+                .rightFrontMotorName("right_front_drive")
+                .rightRearMotorName("right_back_drive")
+                .forwardTicksToInches(FORWARD_TICKS_TO_INCHES)
+                .strafeTicksToInches(STRAFE_TICKS_TO_INCHES);
+        localizer = new Localizer(
+                hardwareMap, localizerConstants, "imu", HUB_ORIENTATION, startPose);
+
+        // FTC Dashboard: robot is drawn on the field overlay each loop (see drawRobot()).
+        dashboard = FtcDashboard.getInstance();
+
         // Wait for the game to start (driver presses START)
         telemetry.addData("Status", "Initialized");
         telemetry.update();
@@ -184,6 +244,19 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
         double rightBackPower = 0;
         while (opModeIsActive()) {
             double max;
+
+            // ---------------------------- ODOMETRY UPDATE ----------------------------
+            // One call advances the localizer (drive encoders for x/y, IMU for heading).
+            localizer.update();
+            Pose robotPose = localizer.getPose();   // Pedro coordinates, inches + radians
+
+            // Draw the robot on the FTC Dashboard field overlay. The overlay uses the FTC
+            // standard field frame (center origin), so convert the pose out of Pedro coords.
+            Pose fieldPose = robotPose.getAsCoordinateSystem(FTCCoordinates.INSTANCE);
+            TelemetryPacket packet = new TelemetryPacket();
+            drawRobot(packet.fieldOverlay(),
+                    fieldPose.getX(), fieldPose.getY(), fieldPose.getHeading());
+            dashboard.sendTelemetryPacket(packet);
 
             // POV Mode uses left joystick to go forward & strafe, and right joystick to rotate.
             //axial = speed, lateral = turn, yaw = strafe
@@ -308,6 +381,11 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             // UPDATE TELEMETRY
             // Show the elapsed game time, wheel power, and other systems power
             telemetry.addData("Status", "Run Time: " + runtime.toString());
+            // Odometry pose in Pedro coordinates (see doc/coordinates-system.md).
+            telemetry.addData("Pose (in, deg)", "X %5.1f  Y %5.1f  H %5.1f",
+                    robotPose.getX(),
+                    robotPose.getY(),
+                    Math.toDegrees(robotPose.getHeading()));
             telemetry.addData("Front left/Right", "%4.2f, %4.2f", leftFrontPower, rightFrontPower);
             telemetry.addData("Back  left/Right", "%4.2f, %4.2f", leftBackPower, rightBackPower);
             telemetry.addData("Intake", "%%4.2f", intake.getPower());
@@ -320,5 +398,35 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             telemetry.addData("Catapult MODE", "%s", catapult_mode_str);
             telemetry.update();
         }
+    }
+
+    /**
+     * Draws the robot on the FTC Dashboard field overlay as an {@link #ROBOT_SIZE_INCHES}-inch
+     * square, with a line from the center to the middle of the front edge to show heading.
+     *
+     * @param overlay the field-overlay canvas
+     * @param x       robot X, in inches, FTC standard field frame
+     * @param y       robot Y, in inches, FTC standard field frame
+     * @param heading robot heading, in radians (CCW+); the robot's front faces +x_robot
+     */
+    private void drawRobot(Canvas overlay, double x, double y, double heading) {
+        double half = ROBOT_SIZE_INCHES / 2.0;
+        double cos = Math.cos(heading);
+        double sin = Math.sin(heading);
+
+        // Square corners in the robot frame (front is +x): front-left, front-right,
+        // back-right, back-left. Rotate each by heading and translate to (x, y).
+        double[][] robotCorners = {{half, half}, {half, -half}, {-half, -half}, {-half, half}};
+        double[] xs = new double[4];
+        double[] ys = new double[4];
+        for (int i = 0; i < 4; i++) {
+            xs[i] = x + robotCorners[i][0] * cos - robotCorners[i][1] * sin;
+            ys[i] = y + robotCorners[i][0] * sin + robotCorners[i][1] * cos;
+        }
+        overlay.setStroke("#3F51B5").setStrokeWidth(1).strokePolygon(xs, ys);
+
+        // Heading line: robot center -> middle of the front edge (+x_robot).
+        overlay.setStroke("#FFFFFF")
+                .strokeLine(x, y, x + half * cos, y + half * sin);
     }
 }
