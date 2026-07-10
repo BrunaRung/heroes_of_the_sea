@@ -34,6 +34,10 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
+
 /*
  * This file contains an example of a Linear "OpMode".
  * An OpMode is a 'program' that runs in either the autonomous or the teleop period of an FTC match.
@@ -67,6 +71,9 @@ import com.qualcomm.robotcore.util.ElapsedTime;
 
 public class TeleOpControlLinearOpMode extends LinearOpMode {
 
+
+    private Pose2D startPose = new Pose2D(DistanceUnit.MM, 0,0, AngleUnit.RADIANS, 0 );
+    double x = startPose.getX(DistanceUnit.INCH);
     // Declare OpMode members for each of the 4 motors.
     private ElapsedTime runtime = new ElapsedTime();
     private ElapsedTime catatime = new ElapsedTime();
@@ -181,8 +188,8 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             // POV Mode uses left joystick to go forward & strafe, and right joystick to rotate.
             //axial = speed, lateral = turn, yaw = strafe
             double axial = -gamepad1.left_stick_y;  // Note: pushing stick forward gives negative value
-            double lateral = -gamepad1.right_stick_x;
             double yaw = -gamepad1.left_stick_x;
+            double lateral = -gamepad1.right_stick_x;
 
             boolean intakeInButton = gamepad1.left_trigger > 0.2;
             boolean intakeOutButton = gamepad1.left_bumper;
