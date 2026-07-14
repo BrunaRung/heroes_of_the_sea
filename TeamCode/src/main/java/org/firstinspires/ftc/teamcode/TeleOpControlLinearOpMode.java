@@ -112,6 +112,14 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
     private Alliance alliance = Alliance.RED;
     private StartingPosition startingPosition = StartingPosition.NEAR;
 
+    // Drive reference frame, toggled at runtime by clicking the right stick (R3). ROBOT_CENTRIC is
+    // the original behavior (stick forward = robot forward); FIELD_CENTRIC rotates the translation
+    // sticks by the robot's field heading so stick forward = downfield regardless of which way the
+    // robot faces. Heading comes from the localizer (IMU-sourced, field-frame). Defaults to
+    // ROBOT_CENTRIC so the OpMode behaves exactly as before unless a driver opts in.
+    private enum DriveMode { ROBOT_CENTRIC, FIELD_CENTRIC }
+    private DriveMode driveMode = DriveMode.ROBOT_CENTRIC;
+
     // The Localizer (typed as PP's interface so it can be swapped for a Pinpoint/dead-wheel
     // localizer later) and the hubs cached for bulk encoder reads.
     private com.pedropathing.localization.Localizer localizer;
@@ -259,11 +267,37 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             // Draw the robot on the FTC Dashboard field overlay (converted to the FTC frame).
             sendFieldOverlay(robotPose);
 
+            // Toggle drive frame with a right-stick click (R3). rightStickButtonWasPressed() is the
+            // SDK's built-in rising-edge helper (RobotCore 11.1.0) — it fires once per physical
+            // press, so no manual latch is needed. Call it once per loop.
+            if (gamepad1.rightStickButtonWasPressed()) {
+                driveMode = (driveMode == DriveMode.ROBOT_CENTRIC)
+                        ? DriveMode.FIELD_CENTRIC
+                        : DriveMode.ROBOT_CENTRIC;
+            }
+
             // POV Mode uses left joystick to go forward & strafe, and right joystick to rotate.
             //axial = speed, lateral = turn, yaw = strafe
             double axial = gamepad1.left_stick_y;  // Note: pushing stick forward gives negative value
             double yaw = gamepad1.left_stick_x;
-            double lateral = gamepad1.right_stick_x;
+            double lateral = gamepad1.right_stick_x;  // turn — never rotated by heading
+
+            // FIELD-CENTRIC: rotate the translation sticks (axial/yaw) by the robot's field heading
+            // so "stick forward" means "downfield" no matter which way the robot faces. The turn
+            // channel (lateral) is untouched. This branch reduces to the identity at heading 0, and
+            // is skipped entirely in ROBOT_CENTRIC, so robot-centric drive is byte-for-byte as before.
+            // NOTE: the rotation sign assumes a particular stick/motor handedness — verify on-robot
+            // (point the robot several ways, push the stick away; it must always drive away). If it
+            // strafes instead of driving straight, swap the two sin() signs below.
+            if (driveMode == DriveMode.FIELD_CENTRIC) {
+                double h = robotPose.getHeading();  // IMU-sourced, field-frame, radians, CCW+
+                double cos = Math.cos(h);
+                double sin = Math.sin(h);
+                double a = axial;
+                double y = yaw;
+                axial = a * cos - y * sin;
+                yaw   = a * sin + y * cos;
+            }
 
             boolean intakeInButton = gamepad1.left_trigger > 0.2;
             boolean intakeOutButton = gamepad1.left_bumper;
@@ -382,6 +416,7 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             // UPDATE TELEMETRY
             // Show the elapsed game time, wheel power, and other systems power
             telemetry.addData("Status", "Run Time: " + runtime.toString());
+            telemetry.addData("Drive Mode", "%s  (R3 to toggle)", driveMode);
             // Odometry pose in Pedro coordinates (see doc/coordinates-system.md).
             telemetry.addData("Pose (in, deg)", "X %5.1f  Y %5.1f  H %5.1f",
                     robotPose.getX(),
