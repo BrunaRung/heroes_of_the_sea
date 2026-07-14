@@ -31,18 +31,21 @@ package org.firstinspires.ftc.teamcode;
 
 import com.acmerobotics.dashboard.FtcDashboard;
 import com.acmerobotics.dashboard.canvas.Canvas;
+import com.acmerobotics.dashboard.config.Config;
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket;
 
 import com.pedropathing.ftc.FTCCoordinates;
-import com.pedropathing.ftc.localization.constants.DriveEncoderConstants;
+import com.pedropathing.ftc.InvertedFTCCoordinates;
 import com.pedropathing.geometry.Pose;
+import com.pedropathing.geometry.PedroCoordinates;
 
 import com.qualcomm.hardware.lynx.LynxModule;
-import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.util.ElapsedTime;
+
+import org.firstinspires.ftc.robotcore.external.Telemetry;
 
 import java.util.List;
 
@@ -75,33 +78,39 @@ import java.util.List;
  */
 
 // Based on the sample: Basic: Omni Linear OpMode
+@Config
 @TeleOp(name = "TeleOp Control", group = "Teleop")
 
 public class TeleOpControlLinearOpMode extends LinearOpMode {
 
-
-    // ################################### ODOMETRY / LOCALIZATION ###############################
-    // Localization is delegated to a Pedro Pathing Localizer (see doc/coordinates-system.md).
-    // Poses are in the Pedro coordinate system. The current implementation fuses the drive-motor
-    // encoders (x/y) with the Control Hub IMU (heading); swap it for a Pinpoint/dead-wheel
-    // Localizer later without touching the rest of this OpMode.
-
-    // --- Drive encoder tick->inch calibration (REV UltraPlanetary 12:1 + HD Hex, 75mm wheels) ---
-    // COUNTS_PER_INCH = 28 (HD Hex CPR) * 10.484 (true 12:1) / (pi * 2.953") ~= 31.6 counts/inch.
-    // forward/strafe multipliers are inches-per-tick; TUNE via Pedro's tuners (push 48").
-    static final double COUNTS_PER_INCH = 28.0 * 10.484 / (2.953 * Math.PI);
-    static final double FORWARD_TICKS_TO_INCHES = 1.0 / COUNTS_PER_INCH;
-    static final double STRAFE_TICKS_TO_INCHES = 1.0 / COUNTS_PER_INCH; // tune separately for strafe
-
-    // Control Hub mounting orientation - SET THESE to how your hub is actually mounted.
-    static final RevHubOrientationOnRobot HUB_ORIENTATION = new RevHubOrientationOnRobot(
-            RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD,
-            RevHubOrientationOnRobot.UsbFacingDirection.UP);
-
     // Starting pose in Pedro coordinates (default corner origin). Change per your auto start.
-    private final Pose startPoseBlueNear = new Pose(20.4, 122.74, Math.toRadians(144));
-    private final Pose startPoseRedNear = new Pose(123.7, 122.74, Math.toRadians(36));
+    // NEAR start poses imported from the ThunderStrike 33535 "Fortunate Son" code
+    // (fortunateson/util/Field.java, STARTING_POSES[..][1]). Those are defined in the FTC standard
+    // field frame (inches, degrees): Red Near (-51, 51, 134deg), Blue Near (-51, -51, -134deg).
+    // Convert to Pedro coordinates: RedNear -> (123, 123, 44deg), BlueNear -> (21, 123, 136deg).
+    private final Pose startPoseRedNear =
+            new Pose(-51, 51, Math.toRadians(134), FTCCoordinates.INSTANCE)
+                    .getAsCoordinateSystem(PedroCoordinates.INSTANCE);
+    private final Pose startPoseBlueNear =
+            new Pose(-51, -51, Math.toRadians(-134), FTCCoordinates.INSTANCE)
+                    .getAsCoordinateSystem(PedroCoordinates.INSTANCE);
+    // FAR start poses imported from the "Fortunate Son" code (Field.java STARTING_POSES[..][3],
+    // "Far Out") in the FTC standard field frame (inches, degrees): Red (63, 15, 180deg),
+    // Blue (63, -15, 180deg). Convert to Pedro: RedFar -> (87, 9, 90deg), BlueFar -> (57, 9, 90deg).
+    private final Pose startPoseRedFar =
+            new Pose(63, 15, Math.toRadians(180), FTCCoordinates.INSTANCE)
+                    .getAsCoordinateSystem(PedroCoordinates.INSTANCE);
+    private final Pose startPoseBlueFar =
+            new Pose(63, -15, Math.toRadians(180), FTCCoordinates.INSTANCE)
+                    .getAsCoordinateSystem(PedroCoordinates.INSTANCE);
     private final Pose startPose = new Pose(72, 72, Math.PI);
+
+    // ------------------------------ MATCH SETUP (selected during INIT) --------------------------
+    // Driver picks these in the INIT selection loop; they choose the localizer's start pose.
+    private enum Alliance { RED, BLUE }
+    private enum StartingPosition { NEAR, FAR }
+    private Alliance alliance = Alliance.RED;
+    private StartingPosition startingPosition = StartingPosition.NEAR;
 
     // The Localizer (typed as PP's interface so it can be swapped for a Pinpoint/dead-wheel
     // localizer later) and the hubs cached for bulk encoder reads.
@@ -144,7 +153,8 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
 
     private double CATAPULT_UP_POWER = -1.0;
     private double CATAPULT_DOWN_POWER = 1.0;
-    private double CATAPULT_HOLD_POWER = 0.2;
+    // FTC Dashboard-tunable (class is @Config): live feed-forward to hold the catapult down.
+    public static double CATAPULT_HOLD_POWER = 0.1;
 
     private enum CatapultModes {UP, DOWN, HOLD}
     private CatapultModes pivotMode;
@@ -213,27 +223,23 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
         for (LynxModule hub : allHubs) {
             hub.setBulkCachingMode(LynxModule.BulkCachingMode.AUTO);
         }
-        // Configure the drive-encoder localizer (motor names must match the robot config, and the
-        // encoder directions/multipliers are tuned with Pedro's tuners). The class fuses these
-        // encoders (x/y) with the Control Hub IMU (heading) and reports poses in Pedro coordinates.
-        DriveEncoderConstants localizerConstants = new DriveEncoderConstants()
-                .leftFrontMotorName("left_front_drive")
-                .leftRearMotorName("left_back_drive")
-                .rightFrontMotorName("right_front_drive")
-                .rightRearMotorName("right_back_drive")
-                .forwardTicksToInches(FORWARD_TICKS_TO_INCHES)
-                .strafeTicksToInches(STRAFE_TICKS_TO_INCHES);
-        localizer = new Localizer(
-                hardwareMap, localizerConstants, "imu", HUB_ORIENTATION, startPose);
+        // Localizer (drive encoders + Control Hub IMU). All config/calibration lives in
+        // Localizer.java; poses are reported in Pedro coordinates.
+        localizer = new Localizer(hardwareMap, startPose);
 
         // FTC Dashboard: robot is drawn on the field overlay each loop (see drawRobot()).
         dashboard = FtcDashboard.getInstance();
 
-        // Wait for the game to start (driver presses START)
-        telemetry.addData("Status", "Initialized");
-        telemetry.update();
+        // Driver Station telemetry in HTML mode for graphical match-setup feedback.
+        telemetry.setDisplayFormat(Telemetry.DisplayFormat.HTML);
 
-        waitForStart();
+        // Match setup during INIT: driver selects alliance + starting position (blocks until START).
+        selectMatchSetup();
+        if (isStopRequested()) return;
+
+        // Lock the chosen starting pose (Pedro coordinates) into the localizer.
+        localizer.setStartPose(selectedStartPose());
+
         runtime.reset();
         catatime.reset();
         // run until the end of the match (driver presses STOP)
@@ -250,19 +256,14 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             localizer.update();
             Pose robotPose = localizer.getPose();   // Pedro coordinates, inches + radians
 
-            // Draw the robot on the FTC Dashboard field overlay. The overlay uses the FTC
-            // standard field frame (center origin), so convert the pose out of Pedro coords.
-            Pose fieldPose = robotPose.getAsCoordinateSystem(FTCCoordinates.INSTANCE);
-            TelemetryPacket packet = new TelemetryPacket();
-            drawRobot(packet.fieldOverlay(),
-                    fieldPose.getX(), fieldPose.getY(), fieldPose.getHeading());
-            dashboard.sendTelemetryPacket(packet);
+            // Draw the robot on the FTC Dashboard field overlay (converted to the FTC frame).
+            sendFieldOverlay(robotPose);
 
             // POV Mode uses left joystick to go forward & strafe, and right joystick to rotate.
             //axial = speed, lateral = turn, yaw = strafe
-            double axial = -gamepad1.left_stick_y;  // Note: pushing stick forward gives negative value
-            double yaw = -gamepad1.left_stick_x;
-            double lateral = -gamepad1.right_stick_x;
+            double axial = gamepad1.left_stick_y;  // Note: pushing stick forward gives negative value
+            double yaw = gamepad1.left_stick_x;
+            double lateral = gamepad1.right_stick_x;
 
             boolean intakeInButton = gamepad1.left_trigger > 0.2;
             boolean intakeOutButton = gamepad1.left_bumper;
@@ -401,6 +402,86 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
     }
 
     /**
+     * INIT-phase match-setup loop. Runs after INIT and before START; returns when START (or STOP)
+     * is pressed. Edge-detected buttons on gamepad1:
+     *   SHARE   -> toggle Alliance (RED / BLUE)
+     *   OPTIONS -> toggle Starting Position (NEAR / FAR)
+     * Graphical selection feedback is shown on the Driver Station via HTML telemetry.
+     */
+    private void selectMatchSetup() {
+        boolean prevShare = false;
+        boolean prevOptions = false;
+        while (opModeInInit()) {
+            if (gamepad1.share && !prevShare) {
+                alliance = (alliance == Alliance.RED) ? Alliance.BLUE : Alliance.RED;
+            }
+            if (gamepad1.options && !prevOptions) {
+                startingPosition = (startingPosition == StartingPosition.NEAR)
+                        ? StartingPosition.FAR : StartingPosition.NEAR;
+            }
+            prevShare = gamepad1.share;
+            prevOptions = gamepad1.options;
+
+            // Reflect the current selection everywhere: robot start pose + field overlay.
+            Pose selected = selectedStartPose();
+            localizer.setStartPose(selected);
+            sendFieldOverlay(selected);
+
+            // Graphical selection feedback on the Driver Station.
+            telemetry.addLine(matchSetupHtml());
+            telemetry.update();
+        }
+    }
+
+    /** @return the start pose (Pedro coordinates) for the selected alliance + starting position. */
+    private Pose selectedStartPose() {
+        if (alliance == Alliance.BLUE) {
+            return startingPosition == StartingPosition.NEAR ? startPoseBlueNear : startPoseBlueFar;
+        }
+        return startingPosition == StartingPosition.NEAR ? startPoseRedNear : startPoseRedFar;
+    }
+
+    /** Alliance color (hex) used for both the HTML telemetry and the field overlay. */
+    private String allianceColor() {
+        return alliance == Alliance.RED ? "#e53935" : "#1e88e5";
+    }
+
+    /**
+     * Converts a Pedro-coordinate pose to the FTC standard frame and draws the robot on the FTC
+     * Dashboard field overlay, colored by the selected alliance.
+     */
+    private void sendFieldOverlay(Pose pedroPose) {
+        // The FTC Dashboard field is oriented as Pedro's *inverted* FTC frame (180deg / point
+        // reflection from FTCCoordinates), so use InvertedFTCCoordinates or the robot draws
+        // mirrored on both axes.
+        Pose fieldPose = pedroPose.getAsCoordinateSystem(InvertedFTCCoordinates.INSTANCE);
+        TelemetryPacket packet = new TelemetryPacket();
+        drawRobot(packet.fieldOverlay(),
+                fieldPose.getX(), fieldPose.getY(), fieldPose.getHeading(), allianceColor());
+        dashboard.sendTelemetryPacket(packet);
+    }
+
+    /** Builds the graphical (HTML) match-setup readout for the Driver Station. */
+    private String matchSetupHtml() {
+        boolean red = alliance == Alliance.RED;
+        String color = allianceColor();
+        String square = red ? "🟥" : "🟦";   // red / blue large square
+        boolean near = startingPosition == StartingPosition.NEAR;
+        String robotOnSquare = "🤖" + square;          // robot on the alliance square
+        String empty = "⬜";                                 // white square
+        String nearCell = near ? robotOnSquare : empty;
+        String farCell = near ? empty : robotOnSquare;
+        return "<h2>🎮 MATCH SETUP</h2>"
+                + "<h1><font color='" + color + "'>" + square + "&nbsp;" + alliance + " ALLIANCE</font></h1>"
+                + "<big><b>Start:</b> <font color='" + color + "'>" + startingPosition + "</font></big>"
+                + "<br><br>"
+                + "<big>NEAR&nbsp;" + nearCell + "&nbsp;&nbsp;&nbsp;&nbsp;" + farCell + "&nbsp;FAR</big>"
+                + "<br><br>"
+                + "<small><b>SHARE</b> = Alliance&nbsp;&nbsp;|&nbsp;&nbsp;<b>OPTIONS</b> = Start"
+                + "<br>Press <b>▶ START</b> to confirm</small>";
+    }
+
+    /**
      * Draws the robot on the FTC Dashboard field overlay as an {@link #ROBOT_SIZE_INCHES}-inch
      * square, with a line from the center to the middle of the front edge to show heading.
      *
@@ -408,8 +489,9 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
      * @param x       robot X, in inches, FTC standard field frame
      * @param y       robot Y, in inches, FTC standard field frame
      * @param heading robot heading, in radians (CCW+); the robot's front faces +x_robot
+     * @param color   stroke color for the robot square (e.g. the alliance color)
      */
-    private void drawRobot(Canvas overlay, double x, double y, double heading) {
+    private void drawRobot(Canvas overlay, double x, double y, double heading, String color) {
         double half = ROBOT_SIZE_INCHES / 2.0;
         double cos = Math.cos(heading);
         double sin = Math.sin(heading);
@@ -423,7 +505,7 @@ public class TeleOpControlLinearOpMode extends LinearOpMode {
             xs[i] = x + robotCorners[i][0] * cos - robotCorners[i][1] * sin;
             ys[i] = y + robotCorners[i][0] * sin + robotCorners[i][1] * cos;
         }
-        overlay.setStroke("#3F51B5").setStrokeWidth(1).strokePolygon(xs, ys);
+        overlay.setStroke(color).setStrokeWidth(1).strokePolygon(xs, ys);
 
         // Heading line: robot center -> middle of the front edge (+x_robot).
         overlay.setStroke("#FFFFFF")

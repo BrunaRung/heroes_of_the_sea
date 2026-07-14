@@ -1,7 +1,8 @@
 package org.firstinspires.ftc.teamcode;
 
+import com.acmerobotics.dashboard.config.Config;
+
 import com.pedropathing.ftc.localization.Encoder;
-import com.pedropathing.ftc.localization.constants.DriveEncoderConstants;
 import com.pedropathing.geometry.Pose;
 import com.pedropathing.math.Matrix;
 import com.pedropathing.math.Vector;
@@ -20,8 +21,8 @@ import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
  * <p>This implements Pedro Pathing's {@link com.pedropathing.localization.Localizer} interface and
  * reuses PP's {@link Pose}, {@link Vector}, {@link Encoder}, {@link Matrix} and {@link NanoTimer},
  * so it is a drop-in {@code Localizer} anywhere PP expects one. Poses are in the Pedro coordinate
- * system (the default
- * of {@code new Pose(x, y, heading)} is {@code PedroCoordinates}); see doc/coordinates-system.md.
+ * system (the default of {@code new Pose(x, y, heading)} is {@code PedroCoordinates}); see
+ * doc/coordinates-system.md.
  *
  * <p>It is a deliberate variant of PP's own {@code DriveEncoderLocalizer}: the pose-exponential
  * integration is identical, but the heading channel is driven by the <b>IMU</b> (clean absolute
@@ -29,12 +30,101 @@ import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
  * translation. This is a better fit for a robot with low-resolution drive encoders (e.g. REV HD
  * Hex, 28 CPR) whose encoder-derived heading would otherwise be grainy.
  *
+ * <p>All odometry/localization configuration and calibration lives in this class (see the
+ * CONFIGURATION &amp; CALIBRATION block below). The tick-&gt;inch calibration values are
+ * {@code public static} and the class is annotated {@link Config}, so they are editable live from
+ * the FTC Dashboard (under "Localizer") while an OpMode runs.
+ *
  * <p>Swap path: once odometry pods arrive, replace the construction of this class with a
  * {@code PinpointLocalizer} / {@code ThreeWheelIMULocalizer} / etc. Because every consumer only
  * talks to the {@link com.pedropathing.localization.Localizer} interface ({@code update()},
  * {@code getPose()}, ...), no calling code changes.
  */
+@Config
 public class Localizer implements com.pedropathing.localization.Localizer {
+
+    // ################################### ODOMETRY / LOCALIZATION ###############################
+    // This is the robot's Pedro Pathing Localizer (see doc/coordinates-system.md).
+    // Poses are in the Pedro coordinate system. The current implementation fuses the drive-motor
+    // encoders (x/y) with the Control Hub IMU (heading); swap it for a Pinpoint/dead-wheel
+    // Localizer later without touching the OpMode.
+    //
+    // All localizer configuration and calibration (motor names, encoder directions, hub
+    // orientation, tick->inch constants) lives below; the tick->inch calibration is
+    // FTC Dashboard-tunable (class is @Config, edit under "Localizer").
+
+    // =============================== CONFIGURATION & CALIBRATION ===============================
+    // Drive motor names - must match the robot configuration on the Control Hub.
+    public static final String LEFT_FRONT_MOTOR = "left_front_drive";
+    public static final String LEFT_REAR_MOTOR = "left_back_drive";
+    public static final String RIGHT_FRONT_MOTOR = "right_front_drive";
+    public static final String RIGHT_REAR_MOTOR = "right_back_drive";
+    public static final String IMU_NAME = "imu";
+
+    // Encoder counting directions - flip one (FORWARD <-> REVERSE) if that wheel's distance
+    // reads backwards during tuning.
+    public static final double LEFT_FRONT_ENCODER_DIRECTION = Encoder.REVERSE;
+    public static final double RIGHT_FRONT_ENCODER_DIRECTION = Encoder.FORWARD;
+    public static final double LEFT_REAR_ENCODER_DIRECTION = Encoder.REVERSE;
+    public static final double RIGHT_REAR_ENCODER_DIRECTION = Encoder.FORWARD;
+
+    // Control Hub mounting orientation: logo BACKWARD / USB UP.
+    public static final RevHubOrientationOnRobot.LogoFacingDirection HUB_LOGO_DIRECTION =
+            RevHubOrientationOnRobot.LogoFacingDirection.BACKWARD;
+    public static final RevHubOrientationOnRobot.UsbFacingDirection HUB_USB_DIRECTION =
+            RevHubOrientationOnRobot.UsbFacingDirection.UP;
+    public static final RevHubOrientationOnRobot HUB_ORIENTATION =
+            new RevHubOrientationOnRobot(HUB_LOGO_DIRECTION, HUB_USB_DIRECTION);
+
+    // Encoder tick->inch calibration for REV UltraPlanetary 12:1 + HD Hex on 75mm wheels:
+    //   28 CPR * 10.484 (true 12:1) / (pi * 2.953") ~= 31.6 counts/inch.
+    private static final double COUNTS_PER_INCH = 28.0 * 10.484 / (2.953 * Math.PI);
+
+    // FTC Dashboard-tunable correction scalars (live-editable under "Localizer"). COUNTS_PER_INCH
+    // above is fixed by the hardware; what you actually calibrate is a unitless correction scalar,
+    // nominally 1.0. Effective inches-per-tick = SCALAR / COUNTS_PER_INCH. After a 48" push, set
+    // FORWARD_SCALAR = 48 / measured_forward_inches (and STRAFE likewise with a sideways push).
+    public static double FORWARD_SCALAR = 1.0;
+    public static double STRAFE_SCALAR = 1.0;
+
+    /** Effective forward inches travelled per encoder tick (correction scalar applied). */
+    public static double forwardTicksToInches() {
+        return FORWARD_SCALAR / COUNTS_PER_INCH;
+    }
+
+    /** Effective strafe inches travelled per encoder tick (correction scalar applied). */
+    public static double strafeTicksToInches() {
+        return STRAFE_SCALAR / COUNTS_PER_INCH;
+    }
+
+    /**
+     * CSV header fragment (no leading/trailing comma) naming every config/calibration constant,
+     * in the same order as {@link #configCsv()}. Kept in lock-step with configCsv() so a data log
+     * can record the full localizer configuration on every row.
+     */
+    public static String configCsvHeader() {
+        return "fwd_scalar,strafe_scalar,fwd_ticks_to_in,strafe_ticks_to_in,counts_per_inch,"
+                + "lf_motor,lr_motor,rf_motor,rr_motor,imu_name,"
+                + "lf_enc_dir,rf_enc_dir,lr_enc_dir,rr_enc_dir,"
+                + "hub_logo,hub_usb";
+    }
+
+    /**
+     * CSV value fragment (no leading/trailing comma) of every config/calibration constant, in the
+     * same order as {@link #configCsvHeader()}. The scalars and effective tick-&gt;inch values are
+     * read live so Dashboard edits are captured per row.
+     */
+    public static String configCsv() {
+        return FORWARD_SCALAR + "," + STRAFE_SCALAR + ","
+                + forwardTicksToInches() + "," + strafeTicksToInches() + "," + COUNTS_PER_INCH + ","
+                + LEFT_FRONT_MOTOR + "," + LEFT_REAR_MOTOR + "," + RIGHT_FRONT_MOTOR + ","
+                + RIGHT_REAR_MOTOR + "," + IMU_NAME + ","
+                + LEFT_FRONT_ENCODER_DIRECTION + "," + RIGHT_FRONT_ENCODER_DIRECTION + ","
+                + LEFT_REAR_ENCODER_DIRECTION + "," + RIGHT_REAR_ENCODER_DIRECTION + ","
+                + HUB_LOGO_DIRECTION + "," + HUB_USB_DIRECTION;
+    }
+
+    // =================================== STATE ===================================
     private Pose startPose;
     private Pose displacementPose;
     private Pose currentVelocity;
@@ -53,44 +143,33 @@ public class Localizer implements com.pedropathing.localization.Localizer {
 
     private double totalHeading;
 
-    private double forwardTicksToInches;
-    private double strafeTicksToInches;
-
     /**
      * Creates the localizer starting at (0, 0) facing 0 heading.
      */
-    public Localizer(HardwareMap map, DriveEncoderConstants constants,
-                     String imuName, RevHubOrientationOnRobot imuOrientation) {
-        this(map, constants, imuName, imuOrientation, new Pose());
+    public Localizer(HardwareMap map) {
+        this(map, new Pose());
     }
 
     /**
-     * Creates the localizer starting at the given pose.
+     * Creates the localizer starting at the given pose. All hardware names, encoder directions,
+     * hub orientation and calibration come from the CONFIGURATION &amp; CALIBRATION constants above.
      *
-     * @param map            the HardwareMap
-     * @param constants      PP DriveEncoderConstants (motor names, encoder directions, multipliers)
-     * @param imuName        configured name of the Control Hub IMU (usually "imu")
-     * @param imuOrientation how the Control Hub is mounted on the robot
-     * @param setStartPose   starting pose, in Pedro coordinates
+     * @param map          the HardwareMap
+     * @param setStartPose starting pose, in Pedro coordinates
      */
-    public Localizer(HardwareMap map, DriveEncoderConstants constants,
-                     String imuName, RevHubOrientationOnRobot imuOrientation,
-                     Pose setStartPose) {
-        forwardTicksToInches = constants.forwardTicksToInches;
-        strafeTicksToInches = constants.strafeTicksToInches;
+    public Localizer(HardwareMap map, Pose setStartPose) {
+        leftFront = new Encoder(map.get(DcMotorEx.class, LEFT_FRONT_MOTOR));
+        leftRear = new Encoder(map.get(DcMotorEx.class, LEFT_REAR_MOTOR));
+        rightRear = new Encoder(map.get(DcMotorEx.class, RIGHT_REAR_MOTOR));
+        rightFront = new Encoder(map.get(DcMotorEx.class, RIGHT_FRONT_MOTOR));
 
-        leftFront = new Encoder(map.get(DcMotorEx.class, constants.leftFrontMotorName));
-        leftRear = new Encoder(map.get(DcMotorEx.class, constants.leftRearMotorName));
-        rightRear = new Encoder(map.get(DcMotorEx.class, constants.rightRearMotorName));
-        rightFront = new Encoder(map.get(DcMotorEx.class, constants.rightFrontMotorName));
+        leftFront.setDirection(LEFT_FRONT_ENCODER_DIRECTION);
+        leftRear.setDirection(LEFT_REAR_ENCODER_DIRECTION);
+        rightFront.setDirection(RIGHT_FRONT_ENCODER_DIRECTION);
+        rightRear.setDirection(RIGHT_REAR_ENCODER_DIRECTION);
 
-        leftFront.setDirection(constants.leftFrontEncoderDirection);
-        leftRear.setDirection(constants.leftRearEncoderDirection);
-        rightFront.setDirection(constants.rightFrontEncoderDirection);
-        rightRear.setDirection(constants.rightRearEncoderDirection);
-
-        imu = map.get(IMU.class, imuName);
-        imu.initialize(new IMU.Parameters(imuOrientation));
+        imu = map.get(IMU.class, IMU_NAME);
+        imu.initialize(new IMU.Parameters(HUB_ORIENTATION));
         imu.resetYaw();
         previousIMUYaw = 0.0;
 
@@ -208,17 +287,18 @@ public class Localizer implements com.pedropathing.localization.Localizer {
     }
 
     /**
-     * Robot-relative change in position: x/y from the drive encoders, heading from the IMU.
+     * Robot-relative change in position: x/y from the drive encoders (using the live,
+     * Dashboard-tunable calibration), heading from the IMU.
      *
      * @return a 3x1 Matrix of [forward, strafe, heading] deltas.
      */
     public Matrix getRobotDeltas() {
         Matrix returnMatrix = new Matrix(3, 1);
         // x / forward movement
-        returnMatrix.set(0, 0, forwardTicksToInches * (leftFront.getDeltaPosition()
+        returnMatrix.set(0, 0, forwardTicksToInches() * (leftFront.getDeltaPosition()
                 + rightFront.getDeltaPosition() + leftRear.getDeltaPosition() + rightRear.getDeltaPosition()));
         // y / strafe movement
-        returnMatrix.set(1, 0, strafeTicksToInches * (-leftFront.getDeltaPosition()
+        returnMatrix.set(1, 0, strafeTicksToInches() * (-leftFront.getDeltaPosition()
                 + rightFront.getDeltaPosition() + leftRear.getDeltaPosition() - rightRear.getDeltaPosition()));
         // theta / turning — from the IMU, NOT the encoders
         returnMatrix.set(2, 0, imuDeltaHeading);
@@ -232,12 +312,12 @@ public class Localizer implements com.pedropathing.localization.Localizer {
 
     @Override
     public double getForwardMultiplier() {
-        return forwardTicksToInches;
+        return forwardTicksToInches();
     }
 
     @Override
     public double getLateralMultiplier() {
-        return strafeTicksToInches;
+        return strafeTicksToInches();
     }
 
     /**
