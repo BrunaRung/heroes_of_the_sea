@@ -204,9 +204,9 @@ public class AutonomousOpMode extends LinearOpMode {
         // TeleOpControlLinearOpMode's stick-to-power mapping). If the robot drives backward
         // when commanded forward, flip the direction of all four drive motors together.
         leftFrontDrive.setDirection(DcMotor.Direction.FORWARD);
-        leftBackDrive.setDirection(DcMotor.Direction.REVERSE);
+        leftBackDrive.setDirection(DcMotor.Direction.FORWARD);
         rightFrontDrive.setDirection(DcMotor.Direction.REVERSE);
-        rightBackDrive.setDirection(DcMotor.Direction.FORWARD);
+        rightBackDrive.setDirection(DcMotor.Direction.REVERSE);
 
         intake.setDirection(DcMotor.Direction.FORWARD);
         catapult1.setDirection(DcMotor.Direction.REVERSE);
